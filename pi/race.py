@@ -225,7 +225,9 @@ def main():
                 front = gf.front_clearance(scan, p)
 
                 if state == "RUNNING" and lidar.healthy:
-                    steer_deg, speed_mps = gf.gap_follow(scan, rear_blocked, p)
+                    is_reversing = (prev_speed_mps < 0.0) if 'prev_speed_mps' in locals() else False
+                    steer_deg, speed_mps = gf.gap_follow(scan, rear_blocked, p, is_reversing=is_reversing)
+                    prev_speed_mps = speed_mps
 
                     # Stuck: commanding forward but wheel encoder shows no
                     # turning for stuck_secs.

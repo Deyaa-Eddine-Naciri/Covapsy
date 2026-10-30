@@ -10,7 +10,7 @@ means no return and is treated as max range.
 
 PARAMS = {
     # --- car geometry ---
-    "max_steer_deg": 18.0,        # steering clamp, deg (TT-02 servo limit)
+    "max_steer_deg": 18.0,        # steering clamp, deg (keeps inside Ackermann wheel <= 0.35 rad limit)
     "car_width_m": 0.30,          # used to inflate obstacles (disparity extension)
 
     # --- lidar conditioning ---
@@ -21,23 +21,24 @@ PARAMS = {
     # FOV kept < 180 deg, centred front: Pi and battery behind the LiDAR
     # occlude the rear, so rear/side-rear beams are unreliable.
     "front_fov_deg": 100,         # sector +/-100 deg so a corner-exit gap near +/-90 isn't truncated
-    "gap_select_fov_deg": 90,     # max heading +/-90 deg (car's side, still in front of LiDAR)
+    "gap_select_fov_deg": 100,    # max heading +/-100 deg so tight corner exits aren't clipped at +/-90
     "disparity_threshold_m": 0.35,# depth jump that triggers obstacle inflation
     "safety_radius_m": 0.18,      # bubble carved around nearest obstacle
-    "clearance_margin_m": 0.10,   # extra berth on half-car-width when inflating walls
+    "clearance_margin_m": 0.055,  # extra berth on half-car-width when inflating walls
                                   # (raise if it clips corners, lower if it won't fit gaps)
-    "steer_gain": 1.0,            # proportional gain, gap angle to steering angle
-    "aim_deep_bias": 0.5,         # 0 = aim gap center, 1 = aim deepest point
+    "steer_gain": 1.347,          # proportional gain, gap angle to steering angle
+    "aim_deep_bias": 0.8,       # 0 = aim gap center, 1 = aim deepest point (pulls toward corner exit)
 
     # --- speed (conservative, to finish safely) ---
-    "max_speed_mps": 1.0,         # cruise pace; ramp with --speed-cap. 2.0 = firmware soft cap
-    "min_speed_mps": 0.4,         # floor speed in tight spots
+    "max_speed_mps": 3.143,       # cruise pace; ramp with --speed-cap. 2.0 = firmware soft cap
+    "min_speed_mps": 0.977,       # floor speed in tight spots
     "reverse_speed_mps": 0.9,     # reverse speed, sim only (real car uses reverse_pwm_us)
     "reverse_pwm_us": 1250,       # real-car reverse pulse width, us; lower = faster reverse
-    "ttc_target_s": 1.0,          # keep time-to-collision above this; raise = brake earlier
+    "ttc_target_s": 1.082,        # keep time-to-collision above this; raise = brake earlier
 
     # --- blocked / reverse detection ---
-    "emergency_front_m": 0.30,    # front clearance below this == blocked
+    "emergency_front_m": 0.30,    # front clearance below this == blocked, trigger reverse
+    "reverse_exit_m": 0.65,       # hysteresis: must back up until clearance exceeds this before going forward
     "emergency_window_deg": 15,   # half-angle of the front-blocked cone
     "side_clear_min_deg": 20,     # side-clearance sampling window (for recovery dir)
     "side_clear_max_deg": 85,
@@ -45,6 +46,7 @@ PARAMS = {
     # --- runtime-only knobs (pi/drive.py and sim controller,
     #     NOT the pure gap_follow function) ---
     "loop_hz": 15,                # control loop rate, Hz (inside 250 ms watchdog)
+    "max_steer_rate_dps": 180.0,  # steering slew-rate limit, deg/s (prevents instant snap & tire scrub; 150-250 deg/s realistic for RC servo)
     "steer_sign": 1,              # flip to -1 if the car steers the wrong way
     "lidar_front_offset_deg": 0,  # raw-lidar-angle to car-front calibration
     "rear_unknown_blocks": True,  # if rear sensor data missing, assume blocked
@@ -63,3 +65,43 @@ PARAMS = {
     "control_port": 5005,         # TCP port for remote START/STOP
     "control_dir": "/tmp/covapsy",# control-file dir (touch start|stop|quit)
 }
+
+# Allow overriding any parameter via TUNE_<key> environment variables
+# (e.g., TUNE_max_speed_mps=2.8 or TUNE_steer_gain=1.25) or via
+# common/.tune_overrides.json (used when Snap Webots isolates env/tmp).
+import json as _json
+import os as _os
+from pathlib import Path as _Path
+
+_overrides_file = _Path(__file__).resolve().parent / ".tune_overrides.json"
+if _overrides_file.is_file():
+    try:
+        with open(_overrides_file, "r") as _f:
+            _data = _json.load(_f)
+        for _k, _v in _data.get("env", {}).items():
+            _os.environ.setdefault(_k, str(_v))
+        for _k, _v in _data.get("tune", {}).items():
+            _os.environ[f"TUNE_{_k}"] = str(_v)
+    except Exception:
+        pass
+
+for _env_key, _env_val in _os.environ.items():
+    if _env_key.startswith("TUNE_"):
+        _param_name = _env_key[len("TUNE_"):]
+        if _param_name in PARAMS:
+            _orig = PARAMS[_param_name]
+            if isinstance(_orig, bool):
+                PARAMS[_param_name] = _env_val.strip().lower() in ("1", "true", "yes")
+            elif isinstance(_orig, str):
+                PARAMS[_param_name] = _env_val
+            elif _param_name == "max_steer_deg":
+                PARAMS[_param_name] = min(float(_env_val), 18.0)
+            else:
+                PARAMS[_param_name] = float(_env_val)
+        else:
+            try:
+                _val = float(_env_val)
+                PARAMS[_param_name] = min(_val, 18.0) if _param_name == "max_steer_deg" else _val
+            except ValueError:
+                PARAMS[_param_name] = _env_val
+

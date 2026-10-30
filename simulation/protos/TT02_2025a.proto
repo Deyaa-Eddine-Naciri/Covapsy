@@ -31,6 +31,7 @@ PROTO TT02_2025a [
     controllerArgs IS controllerArgs
     window IS window
     synchronization IS synchronization
+    supervisor TRUE
     trackFront                     0.15
     trackRear                      0.15
     wheelbase                      0.257
@@ -57,6 +58,9 @@ PROTO TT02_2025a [
     gearRatio               [-0.62 0.62]
     maxVelocity             36
     extensionSlot [
+      GPS {
+        name "gps"
+      }
       Accelerometer {
         name "accelerometer"
         xAxis TRUE
