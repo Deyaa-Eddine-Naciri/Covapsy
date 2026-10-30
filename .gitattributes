@@ -1,6 +1,5 @@
-# Exclude third-party vendor HAL and CMSIS libraries from GitHub language stats
-stm32/Drivers/** linguist-vendored
+# Exclude STM32 microcontroller firmware from main repository language stats
+stm32/** linguist-vendored
 
 # Exclude generated tuning data from code statistics
 tuning_results.csv linguist-vendored
-
