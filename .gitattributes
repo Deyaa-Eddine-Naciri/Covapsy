@@ -1,0 +1,6 @@
+# Exclude third-party vendor HAL and CMSIS libraries from GitHub language stats
+stm32/Drivers/** linguist-vendored
+
+# Exclude generated tuning data from code statistics
+tuning_results.csv linguist-vendored
+
