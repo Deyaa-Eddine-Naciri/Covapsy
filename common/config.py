@@ -10,8 +10,14 @@ means no return and is treated as max range.
 
 PARAMS = {
     # --- car geometry ---
+    "wheelbase_m": 0.257,         # TT-02 wheelbase, metres
     "max_steer_deg": 18.0,        # steering clamp, deg (keeps inside Ackermann wheel <= 0.35 rad limit)
     "car_width_m": 0.30,          # used to inflate obstacles (disparity extension)
+
+    # --- pure pursuit path tracking ---
+    "pp_lookahead_ratio_s": 0.30, # dynamic lookahead gain: L = ratio * speed
+    "pp_lookahead_min_m": 0.60,   # minimum lookahead distance floor (sharp corner tracking)
+    "pp_lookahead_max_m": 1.80,   # maximum lookahead distance ceiling
 
     # --- lidar conditioning ---
     "max_range_m": 5.0,           # clip ranges beyond this (track is < 5 m across)
