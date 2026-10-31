@@ -17,8 +17,15 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(_HERE, "..", "common"))
 sys.path.insert(0, os.path.join(_HERE, "..", "pi"))
 
-import gap_follower
-from lidar import Lidar
+import pytest
+try:
+    import gap_follower
+    from lidar import Lidar
+except ImportError:
+    Lidar = None
+
+if Lidar is None:
+    pytest.skip("rplidar not installed (hardware test for Pi)", allow_module_level=True)
 
 
 def _nearest(scan):

@@ -5,3 +5,6 @@ __pycache__/
 
 # STM32 build artifacts
 stm32/build/
+
+# Repomix
+repomix-output.md
