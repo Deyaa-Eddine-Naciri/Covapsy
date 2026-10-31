@@ -119,10 +119,36 @@ lidar.enable(sensor_step)
 gps = GPS("gps")
 gps.enable(sensor_step)
 
+try:
+    from controller import InertialUnit
+    imu = InertialUnit("imu")
+    imu.enable(sensor_step)
+except Exception:
+    imu = None
+
 keyboard = driver.getKeyboard()
 keyboard.enable(sensor_step)
 
 lap_timer = LapTimer()
+record_path = os.environ.get("COVAPSY_RECORD_PATH")
+if record_path in ("1", "true", "True"):
+    record_path = str(_COMMON / "maps" / "reference_path.csv")
+recorded_points = []
+path_saved = False
+
+
+def _save_record_path():
+    global path_saved
+    _log(f"[RECORDER] _save_record_path called: target={record_path}, points={len(recorded_points)}")
+    if record_path and not path_saved and recorded_points:
+        p = Path(record_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w") as f:
+            f.write("x,y,yaw,speed_mps,steer_deg\n")
+            for px, py, pyaw, pspd, pstr in recorded_points:
+                f.write(f"{px:.4f},{py:.4f},{pyaw:.4f},{pspd:.4f},{pstr:.4f}\n")
+        _log(f"[RECORDER] Successfully saved {len(recorded_points)} waypoints to {record_path}")
+        path_saved = True
 
 
 def read_scan():
@@ -226,6 +252,7 @@ while driver.step() != -1:
     # Fail-fast abort in headless tuning mode
     if headless_tune:
         if lap_timer.lap_count >= 1:
+            _save_record_path()
             if _LOGF:
                 _LOGF.flush()
             sys.stdout.flush()
@@ -303,11 +330,16 @@ while driver.step() != -1:
     driver.setSteeringAngle(radians(steer_cmd))
     driver.setCruisingSpeed(speed_mps * 3.6)  # m/s to km/h (negative = reverse)
 
-    # Heartbeat (~1 Hz) so headless runs show the car is driving.
-    '''if step_count % 30 == 0:
-        front = gap_follower.front_clearance(scan)
-        pos_str = f"x={x:5.2f} y={y:5.2f}" if x is not None else "pos=N/A"
-        _log(f"[COVAPSY] step={step_count} {pos_str} front={front:4.2f}m "
-             f"steer={steer_deg:+6.1f} speed={speed_mps:+4.2f} "
-             f"rear_raw={rear_nearest(scan, ignore_self=False):4.2f} "
-             f"rear_obj={rear_nearest(scan):4.2f} rear_blk={rear_blocked}")'''
+    # Path recording for Pure Pursuit raceline extraction
+    if record_path and not path_saved and x is not None and y is not None:
+        if lap_timer.lap_start_time is not None and lap_timer.lap_count == 0:
+            yaw = 0.0
+            if imu is not None:
+                rpy = imu.getRollPitchYaw()
+                if rpy:
+                    yaw = rpy[2]
+            recorded_points.append((x, y, yaw, speed_mps, steer_cmd))
+        elif lap_timer.lap_count >= 1 and recorded_points:
+            _save_record_path()
+
+_save_record_path()
