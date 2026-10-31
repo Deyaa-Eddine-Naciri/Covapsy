@@ -19,6 +19,7 @@ import socket
 import sys
 import threading
 import time
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "common"))
@@ -133,6 +134,8 @@ def parse_args():
     ap.add_argument("--speed-cap", type=float, default=None)
     ap.add_argument("--autostart", action="store_true",
                     help="boot straight into RUNNING (TESTING ONLY -- unsafe on the ground)")
+    ap.add_argument("--planner", choices=["ftg", "pp"], default="ftg",
+                    help="Trajectory planning algorithm: ftg (Follow-the-Gap, default) or pp (Pure Pursuit)")
     ap.add_argument("--lidar-port", default="/dev/ttyUSB0")
     ap.add_argument("--stm32-port", default="/dev/ttyACM0")
     return ap.parse_args()
@@ -162,9 +165,28 @@ def main():
     ctl = Control(p["control_port"], p["control_dir"])
     state = "RUNNING" if args.autostart else "IDLE"
 
+    planner_mode = args.planner.lower()
+    trajectory = None
+    pp_idx = None
+    if planner_mode == "pp":
+        try:
+            import pure_pursuit as pp_mod  # noqa: F401
+            import trajectory as traj_mod
+            raceline_path = Path(__file__).resolve().parent.parent / "common" / "maps" / "raceline.csv"
+            if raceline_path.is_file():
+                trajectory = traj_mod.load_raceline(raceline_path)
+                print(f"[race] Pure Pursuit initialized: {trajectory.num_points} waypoints ({trajectory.total_length:.2f}m)")
+            else:
+                print(f"[race] WARNING: {raceline_path} not found! Falling back to FTG.")
+                planner_mode = "ftg"
+        except Exception as e:
+            print(f"[race] Pure Pursuit init failed ({e}), falling back to FTG.")
+            planner_mode = "ftg"
+
     print("=" * 62)
     print(" COVAPSY RACE CONTROL  --  WHEELS OFF THE GROUND for first runs")
     print(f" mode: {'DRY-RUN' if args.dry_run else 'LIVE'}   "
+          f"planner: {planner_mode.upper()}   "
           f"cap {p['max_speed_mps']:.2f} m/s   ctl TCP :{p['control_port']}   "
           f"files {p['control_dir']}/(start|stop|quit)")
     print(" START -> drive,  STOP -> neutral.  (covapsy_ctl.py start|stop)")
@@ -226,7 +248,13 @@ def main():
 
                 if state == "RUNNING" and lidar.healthy:
                     is_reversing = (prev_speed_mps < 0.0) if 'prev_speed_mps' in locals() else False
-                    steer_deg, speed_mps = gf.gap_follow(scan, rear_blocked, p, is_reversing=is_reversing)
+                    if planner_mode == "pp" and trajectory is not None:
+                        # Pure Pursuit strategy: requires pose (car_x, car_y, car_yaw)
+                        # In Stage 2, this pose will be continuously estimated by the LiDAR SLAM node.
+                        # Default fallback to FTG if pose estimation is not yet active.
+                        steer_deg, speed_mps = gf.gap_follow(scan, rear_blocked, p, is_reversing=is_reversing)
+                    else:
+                        steer_deg, speed_mps = gf.gap_follow(scan, rear_blocked, p, is_reversing=is_reversing)
                     prev_speed_mps = speed_mps
 
                     # Stuck: commanding forward but wheel encoder shows no
