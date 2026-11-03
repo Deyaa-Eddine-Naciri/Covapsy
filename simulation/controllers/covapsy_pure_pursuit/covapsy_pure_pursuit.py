@@ -13,7 +13,7 @@ from collections import deque
 from math import hypot, isnan, radians, tan
 from pathlib import Path
 
-from controller import GPS, InertialUnit
+from controller import GPS, InertialUnit, Lidar
 from vehicle import Driver
 
 # --- Import shared modules from common/ ------------------------------------
@@ -28,27 +28,37 @@ sys.path.insert(0, str(_COMMON))
 
 import config  # noqa: E402
 import pure_pursuit as pp  # noqa: E402
+import slam as slam_mod  # noqa: E402
 import trajectory as traj_mod  # noqa: E402
 
 PARAMS = config.PARAMS
 
-# Load raceline trajectory
+# Load or rebuild raceline trajectory
 RACELINE_CSV = _COMMON / "maps" / "raceline.csv"
-if not RACELINE_CSV.is_file():
-    # If raceline.csv not found, build it from reference_path.csv
+MAP_FILE = _COMMON / "maps" / "track_map.bin"
+if not RACELINE_CSV.is_file() or os.environ.get("COVAPSY_REBUILD_RACELINE") == "1":
     REF_CSV = _COMMON / "maps" / "reference_path.csv"
     if REF_CSV.is_file():
-        trajectory = traj_mod.optimize_raceline(REF_CSV, RACELINE_CSV)
+        _gmap = slam_mod.OccupancyGridMap.load(MAP_FILE) if MAP_FILE.is_file() else None
+        trajectory = traj_mod.optimize_raceline(REF_CSV, RACELINE_CSV, grid_map=_gmap)
     else:
         raise FileNotFoundError(f"Neither {RACELINE_CSV} nor {REF_CSV} found!")
 else:
     trajectory = traj_mod.load_raceline(RACELINE_CSV)
 
-# Optional file logging
+# Optional file logging and telemetry recording
 _LOGF = None
 _logpath = os.environ.get("COVAPSY_LOGFILE")
 if _logpath:
     _LOGF = open(_logpath, "w", buffering=1)
+
+_TELEM_PATH = os.environ.get("COVAPSY_TELEM_FILE", str(_COMMON / "maps" / "telemetry_pure_pursuit.csv"))
+_TELEMF = None
+try:
+    _TELEMF = open(_TELEM_PATH, "w", buffering=1)
+    _TELEMF.write("time_s,car_x,car_y,car_yaw,measured_spd,steer_cmd_deg,target_x,target_y,target_spd,cte_m,wp_idx\n")
+except Exception:
+    _TELEMF = None
 
 
 def _log(msg):
@@ -82,6 +92,13 @@ class LapTimer:
         self.last_lap_trigger_time = -float("inf")
         self.lap_count = 0
         self.last_lap_duration = None
+        self.current_lap_ctes = []
+        self.current_lap_speeds = []
+
+    def log_sample(self, cte, spd):
+        if self.lap_start_time is not None:
+            self.current_lap_ctes.append(cte)
+            self.current_lap_speeds.append(spd)
 
     def update(self, current_time, x, y):
         if self.prev_x is not None:
@@ -90,14 +107,22 @@ class LapTimer:
                 self.last_lap_trigger_time = current_time
                 if self.lap_start_time is None:
                     self.lap_start_time = current_time
+                    self.current_lap_ctes = []
+                    self.current_lap_speeds = []
                     _log(f"\033[32m[LAP TIMER] Start line crossed at {current_time:.2f}s -- Timing Pure Pursuit Lap 1!\033[0m")
                 else:
                     lap_time = current_time - self.lap_start_time
                     self.lap_start_time = current_time
                     self.lap_count += 1
                     self.last_lap_duration = lap_time
-                    _log(f"\033[32m[LAP TIMER] Lap {self.lap_count} completed: {lap_time:.2f} s "
-                         f"(sim time: {current_time:.2f}s)\033[0m")
+                    mean_cte = (sum(self.current_lap_ctes) / len(self.current_lap_ctes)) if self.current_lap_ctes else 0.0
+                    max_cte = max(self.current_lap_ctes) if self.current_lap_ctes else 0.0
+                    avg_spd = (sum(self.current_lap_speeds) / len(self.current_lap_speeds)) if self.current_lap_speeds else 0.0
+                    max_spd = max(self.current_lap_speeds) if self.current_lap_speeds else 0.0
+                    _log(f"\033[32m[LAP TIMER] Lap {self.lap_count} completed: {lap_time:.2f} s (sim time: {current_time:.2f}s)\033[0m")
+                    _log(f"\033[36m[LAP STATS] Tracking: Mean CTE={mean_cte*100:.1f} cm, Max CTE={max_cte*100:.1f} cm | Speed: Avg={avg_spd:.2f} m/s, Max={max_spd:.2f} m/s\033[0m")
+                    self.current_lap_ctes = []
+                    self.current_lap_speeds = []
         self.prev_x = x
         self.prev_y = y
 
@@ -106,6 +131,9 @@ class LapTimer:
 driver = Driver()
 basic_step = int(driver.getBasicTimeStep())
 sensor_step = 2 * basic_step
+
+lidar = Lidar("RpLidarA2")
+lidar.enable(sensor_step)
 
 gps = GPS("gps")
 gps.enable(sensor_step)
@@ -120,6 +148,36 @@ keyboard = driver.getKeyboard()
 keyboard.enable(sensor_step)
 
 lap_timer = LapTimer()
+
+build_map = os.environ.get("COVAPSY_BUILD_MAP") == "1"
+MAP_FILE = _COMMON / "maps" / "track_map.bin"
+grid_map = slam_mod.OccupancyGridMap() if build_map else None
+map_saved = False
+
+
+def read_scan():
+    """Webots LiDAR to canonical 360-float scan in metres (0=front, CCW=left)."""
+    raw = lidar.getRangeImage()
+    scan = [0.0] * 360
+    if raw is None:
+        return scan
+    n = len(raw)
+    for i in range(360):
+        d = raw[-i % n]
+        if d == d and 0.0 < d < float("inf"):
+            scan[(i - 180) % 360] = d
+        else:
+            scan[(i - 180) % 360] = 0.0
+    return scan
+
+
+def _save_built_map():
+    global map_saved
+    if build_map and grid_map is not None and not map_saved:
+        grid_map.build_distance_field()
+        grid_map.save(MAP_FILE)
+        _log(f"[SLAM MAPPER] Saved 2D occupancy grid & distance field to {MAP_FILE}")
+        map_saved = True
 
 auto_mode = os.environ.get("COVAPSY_AUTOSTART") == "1"
 headless_tune = os.environ.get("COVAPSY_HEADLESS_TUNE") == "1"
@@ -186,9 +244,17 @@ while driver.step() != -1:
         else:
             measured_speed = max(0.0, driver.getCurrentSpeed() / 3.6)
 
+        if build_map and grid_map is not None and sim_time > 0.5 and (step_count % 3 == 0):
+            scan = read_scan()
+            grid_map.integrate_scan(x, y, yaw, scan)
+
     # Headless benchmark mode quit
     if headless_tune:
         if lap_timer.lap_count >= 1:
+            _save_built_map()
+            driver.step()  # step once so Webots flushes stdout buffer before quit
+            if _TELEMF:
+                _TELEMF.flush()
             if _LOGF:
                 _LOGF.flush()
             sys.stdout.flush()
@@ -197,6 +263,8 @@ while driver.step() != -1:
         lap_elapsed = (sim_time - lap_timer.lap_start_time) if lap_timer.lap_start_time is not None else 0.0
         if (lap_timer.lap_start_time is None and sim_time > 15.0) or lap_elapsed > 55.0 or sim_time > 60.0:
             _log(f"[TUNE_RESULT] DNF (timeout: sim_time={sim_time:.2f}s, lap_elapsed={lap_elapsed:.2f}s)")
+            if _TELEMF:
+                _TELEMF.flush()
             sys.stdout.flush()
             driver.simulationQuit(1)
             break
@@ -205,6 +273,8 @@ while driver.step() != -1:
             max_moved = max(hypot(px - x0, py - y0) for _, px, py in pos_history)
             if max_moved < 0.10:
                 _log(f"[TUNE_RESULT] DNF (stuck at sim_time={sim_time:.2f}s, max_moved={max_moved:.3f}m)")
+                if _TELEMF:
+                    _TELEMF.flush()
                 sys.stdout.flush()
                 driver.simulationQuit(1)
                 break
@@ -242,16 +312,24 @@ while driver.step() != -1:
 
     steer_cmd = max(-18.0, min(18.0, current_steer_cmd))
 
-    # Dynamic cornering speed clamp: constrain lateral acceleration below tire grip limit (2.2 m/s^2).
+    # Dynamic cornering speed clamp: constrain lateral acceleration below tire grip limit (2.28 m/s^2).
     # Prevents power understeer when lookahead point is on a straight but vehicle is still negotiating a turn.
     steer_rad = radians(abs(steer_cmd))
     if steer_rad > radians(2.0):
-        max_lat_accel = 2.20  # m/s^2
+        max_lat_accel = 2.28  # m/s^2
         steer_spd_cap = (max_lat_accel * 0.257 / tan(steer_rad)) ** 0.5
-        target_speed_mps = max(1.10, min(target_speed_mps, steer_spd_cap))
+        target_speed_mps = max(1.15, min(target_speed_mps, steer_spd_cap))
 
     driver.setSteeringAngle(radians(steer_cmd))
     driver.setCruisingSpeed(target_speed_mps * 3.6)  # m/s to km/h
 
+    # Cross-track error (distance to closest waypoint on raceline)
+    c_idx = current_waypoint_idx if current_waypoint_idx is not None else 0
+    cte = hypot(x - trajectory.x[c_idx], y - trajectory.y[c_idx])
+    lap_timer.log_sample(cte, measured_speed)
+
+    if _TELEMF is not None:
+        _TELEMF.write(f"{sim_time:.3f},{x:.3f},{y:.3f},{yaw:.3f},{measured_speed:.3f},{steer_cmd:.2f},{tx:.3f},{ty:.3f},{target_speed_mps:.3f},{cte:.4f},{c_idx}\n")
+
     if step_count % 30 == 0:
-        _log(f"[PP] t={sim_time:.2f}s wp={current_waypoint_idx}/{trajectory.num_points} pos=({x:.2f},{y:.2f}) yaw={yaw:.2f} spd={measured_speed:.2f} steer_cmd={steer_cmd:.1f} target=({tx:.2f},{ty:.2f}) tgt_spd={target_speed_mps:.2f}")
+        _log(f"[PP] t={sim_time:.2f}s wp={current_waypoint_idx}/{trajectory.num_points} pos=({x:.2f},{y:.2f}) cte={cte*100:.1f}cm spd={measured_speed:.2f} steer_cmd={steer_cmd:.1f} target=({tx:.2f},{ty:.2f}) tgt_spd={target_speed_mps:.2f}")
