@@ -2,6 +2,7 @@
 
 States: IDLE (neutral, waiting for START), RUNNING (LiDAR gap-follow with rear-IR
 reverse and stuck recovery), STOPPED (neutral, START re-arms to RUNNING). Boots IDLE.
+MANUAL (only with --gamepad): Xbox controller drives; RB arms/disarms throttle.
 Start/stop come from a TCP control server, control files in control_dir
 (start/stop/quit), or the keyboard (s/x/q) on a TTY. The STM32 250 ms comms
 watchdog neutralises the car if this program dies or USB drops.
@@ -10,6 +11,7 @@ Usage (Pi, wheels off the ground for first runs):
     python3 race.py                 # autonomous, boots IDLE
     python3 race.py --dry-run       # steering tracks LiDAR, throttle 0
     python3 race.py --camera        # also read RGB wrong-way (advisory only)
+    python3 race.py --gamepad       # enable Xbox controller (X = manual, A = auto, B = stop)
 """
 
 import argparse
@@ -93,13 +95,13 @@ class Control:
                 cmd = conn.recv(64).decode("ascii", "replace").strip().upper()
             except Exception:
                 return
-            if cmd in ("START", "STOP", "QUIT"):
+            if cmd in ("START", "STOP", "QUIT", "MANUAL"):
                 self._events.put(cmd)
                 conn.sendall(f"OK {cmd} (state={self._state})\n".encode())
             elif cmd == "STATUS":
                 conn.sendall(f"state={self._state}\n".encode())
             else:
-                conn.sendall(b"ERR use START/STOP/STATUS/QUIT\n")
+                conn.sendall(b"ERR use START/STOP/MANUAL/STATUS/QUIT\n")
 
     def _watch_files(self):
         while self._running:
@@ -122,6 +124,8 @@ class Control:
                 self._events.put("STOP")
             elif c in ("q", "quit"):
                 self._events.put("QUIT")
+            elif c in ("m", "manual"):
+                self._events.put("MANUAL")
 
 
 def parse_args():
@@ -138,6 +142,10 @@ def parse_args():
                     help="Trajectory planning algorithm: ftg (Follow-the-Gap, default) or pp (Pure Pursuit)")
     ap.add_argument("--lidar-port", default="/dev/ttyUSB0")
     ap.add_argument("--stm32-port", default="/dev/ttyACM0")
+    ap.add_argument("--gamepad", nargs="?", const="/dev/input/js0", default=None,
+                    metavar="DEV", help="enable Xbox controller manual mode (default /dev/input/js0)")
+    ap.add_argument("--manual-speed-cap", type=float, default=None,
+                    help="manual mode top speed at full RT, m/s (default manual_max_speed_mps)")
     return ap.parse_args()
 
 
@@ -162,6 +170,8 @@ def main():
         # When a user sets an explicit speed cap lower than the default cornering
         # floor speed (min_speed_mps), ensure the floor doesn't override the cap.
         p["min_speed_mps"] = min(p["min_speed_mps"], args.speed_cap)
+    if args.manual_speed_cap is not None:
+        p["manual_max_speed_mps"] = args.manual_speed_cap
     period = 1.0 / p["loop_hz"]
     steer_sign = p["steer_sign"]
 
@@ -193,6 +203,9 @@ def main():
           f"cap {p['max_speed_mps']:.2f} m/s   ctl TCP :{p['control_port']}   "
           f"files {p['control_dir']}/(start|stop|quit)")
     print(" START -> drive,  STOP -> neutral.  (covapsy_ctl.py start|stop)")
+    if args.gamepad:
+        print(f" gamepad {args.gamepad}: X = MANUAL, RB = arm/disarm throttle, "
+              f"A = START, B = STOP   manual cap {p['manual_max_speed_mps']:.2f} m/s")
     print("=" * 62)
 
     # Stuck-recovery state.
@@ -204,6 +217,14 @@ def main():
     cam = None
     last_cam = 0.0
     wrong_way = False
+
+    # Manual mode (only with --gamepad).
+    gp = None
+    gp_drops = 0
+    manual_armed = False
+    if args.gamepad:
+        from gamepad import Gamepad, manual_command
+        gp = Gamepad(args.gamepad, p).start()
 
     with Lidar(args.lidar_port, front_offset_deg=p["lidar_front_offset_deg"]) as lidar, \
             STM32Link(args.stm32_port) as link:
@@ -232,15 +253,44 @@ def main():
             while True:
                 tick = time.monotonic()
 
-                for cmd in ctl.poll():
+                cmds = ctl.poll()
+                if gp is not None:
+                    for b in gp.pop_presses():
+                        if b == p["gp_btn_b"]:
+                            cmds.append("STOP")
+                        elif b == p["gp_btn_a"]:
+                            cmds.append("START")
+                        elif b == p["gp_btn_x"]:
+                            cmds.append("MANUAL")
+                        elif b == p["gp_btn_rb"] and state == "MANUAL":
+                            manual_armed = not manual_armed
+                            print(f" >> manual throttle {'ARMED' if manual_armed else 'disarmed'}")
+                    if state == "MANUAL" and (not gp.connected or gp.drops != gp_drops):
+                        state = "STOPPED"
+                        manual_armed = False
+                        print(" !! gamepad lost -> STOPPED")
+                    gp_drops = gp.drops
+
+                for cmd in cmds:
                     if cmd == "START" and state != "RUNNING":
                         state = "RUNNING"
+                        manual_armed = False
                         stuck_since = None
                         recovery_until = 0.0
                         print(" >> START -> RUNNING")
                     elif cmd == "STOP" and state != "STOPPED":
                         state = "STOPPED"
+                        manual_armed = False
                         print(" >> STOP -> STOPPED")
+                    elif cmd == "MANUAL" and state != "MANUAL":
+                        if gp is None:
+                            print(" !! MANUAL needs --gamepad; ignored")
+                        elif not gp.connected:
+                            print(f" !! no gamepad on {args.gamepad}; MANUAL ignored")
+                        else:
+                            state = "MANUAL"
+                            manual_armed = False
+                            print(" >> MANUAL (throttle disarmed, press RB to arm)")
                     elif cmd == "QUIT":
                         raise KeyboardInterrupt
                 ctl.set_state(state)
@@ -281,6 +331,10 @@ def main():
                             steer_deg, speed_mps = recovery_steer, -p["reverse_speed_mps"]
                         else:
                             steer_deg, speed_mps = 0.0, 0.0   # boxed both ways, hold
+                elif state == "MANUAL":
+                    steer_deg, speed_mps = manual_command(
+                        gp.steer, gp.rt, gp.lt, manual_armed, p,
+                        p["manual_max_speed_mps"])
                 else:
                     steer_deg, speed_mps = 0.0, 0.0
 
@@ -320,7 +374,8 @@ def main():
                           f"cmd={speed_mps:+4.2f} act={act:4.2f}m/s "
                           f"rear={'BLK' if rear_blocked else 'clr'} "
                           f"head={head if head is not None else '--'} "
-                          f"{'WRONG-WAY' if wrong_way else ''}")
+                          f"{'WRONG-WAY' if wrong_way else ''}"
+                          f"{(' ARMED' if manual_armed else ' disarmed') if state == 'MANUAL' else ''}")
                     last_log = tick
 
                 dt = time.monotonic() - tick
@@ -333,6 +388,8 @@ def main():
             ctl.stop()
             if cam is not None:
                 cam.stop()
+            if gp is not None:
+                gp.stop()
     return 0
 
 
