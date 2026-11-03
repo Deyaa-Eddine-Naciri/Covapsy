@@ -8,3 +8,7 @@ stm32/build/
 
 # Repomix
 repomix-output.md
+
+# Generated telemetry and diagnostic plots
+common/maps/telemetry_*.csv
+common/maps/*.png
