@@ -54,9 +54,8 @@ def manual_command(steer: float, rt: float, lt: float, armed: bool,
 
     steer: left stick X in [-1, 1] (negative = left). rt, lt: triggers [0, 1].
     +steer_deg = LEFT, matching the rest of the codebase. Throttle is analog
-    (speed = rt * speed_cap). LT requests reverse at reverse_speed_mps; the
-    caller's send path turns any negative speed into the fixed ESC reverse
-    pulse. Pressing both triggers, or being disarmed, gives speed 0.
+    (speed = rt * speed_cap). LT provides proportional reverse up to
+    reverse_speed_mps. Pressing both triggers, or being disarmed, gives speed 0.
     """
     dz = p["manual_deadzone"]
     max_steer = min(float(p.get("max_steer_deg", 18.0)), 18.0)
@@ -66,11 +65,14 @@ def manual_command(steer: float, rt: float, lt: float, armed: bool,
         return steer_deg, 0.0
 
     throttle = _apply_deadzone(rt, dz)
-    reverse = p["manual_reverse_enabled"] and lt >= p["manual_trigger_on"]
+    rev_input = _apply_deadzone(lt, dz)
+    reverse = p["manual_reverse_enabled"] and rev_input > 0.0
+
     if reverse and throttle > 0.0:
         return steer_deg, 0.0                      # conflicting inputs: hold
     if reverse:
-        return steer_deg, -p["reverse_speed_mps"]
+        rev_cap = float(p.get("reverse_speed_mps", 0.9))
+        return steer_deg, -rev_input * rev_cap
     return steer_deg, throttle * max(speed_cap, 0.0)
 
 

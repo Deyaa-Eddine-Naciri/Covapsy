@@ -345,16 +345,23 @@ def main():
                     speed_mps = 0.0
 
                 # Send to the car. Reverse arms once via the brake-neutral tap, then
-                # drives a raw reverse pulse (the m/s-to-us map is too gentle near
-                # neutral). Forward and stop use the normal speed path.
+                # drives reverse. In autonomous mode, steering is inverted in reverse
+                # (kinematics mirrored to point nose toward opening). In manual mode,
+                # steering remains direct and intuitive for the human driver.
                 if speed_mps < 0.0 and not rear_blocked:
                     if not reverse_armed:
                         _engage_reverse(link)
                         reverse_armed = True
-                    # Negate steer in reverse: kinematics are mirrored, so turning the
-                    # wheels the other way swings the nose toward the open side.
-                    link.set_steering(steer_sign * -steer_deg)
-                    link.send_raw("P%d" % int(p["reverse_pwm_us"]))
+                    # Scale reverse PWM proportionally between neutral (1440us) and reverse_pwm_us (e.g. 1250us)
+                    # based on commanded reverse speed.
+                    rev_ratio = min(1.0, abs(speed_mps) / max(0.01, p.get("reverse_speed_mps", 0.9)))
+                    neutral_rev_us = 1440.0
+                    target_rev_us = float(p["reverse_pwm_us"])
+                    pulse_us = int(round(neutral_rev_us - rev_ratio * (neutral_rev_us - target_rev_us)))
+
+                    actual_steer = steer_deg if state == "MANUAL" else -steer_deg
+                    link.set_steering(steer_sign * actual_steer)
+                    link.send_raw("P%d" % pulse_us)
                 else:
                     reverse_armed = False
                     link.set_steering(steer_sign * steer_deg)
