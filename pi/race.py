@@ -159,6 +159,9 @@ def main():
     p = dict(PARAMS)
     if args.speed_cap is not None:
         p["max_speed_mps"] = args.speed_cap
+        # When a user sets an explicit speed cap lower than the default cornering
+        # floor speed (min_speed_mps), ensure the floor doesn't override the cap.
+        p["min_speed_mps"] = min(p["min_speed_mps"], args.speed_cap)
     period = 1.0 / p["loop_hz"]
     steer_sign = p["steer_sign"]
 
