@@ -338,6 +338,7 @@ def main():
                 else:
                     steer_deg, speed_mps = 0.0, 0.0
 
+                cmd_speed = speed_mps
                 if args.no_steer:
                     steer_deg = 0.0
                 if args.dry_run:
@@ -371,7 +372,7 @@ def main():
                     head = link.heading_deg
                     act = link.speed_mps or 0.0
                     print(f" [{state:7}] front={front:4.2f}m steer={steer_deg:+6.1f} "
-                          f"cmd={speed_mps:+4.2f} act={act:4.2f}m/s "
+                          f"cmd={cmd_speed:+4.2f} act={act:4.2f}m/s "
                           f"rear={'BLK' if rear_blocked else 'clr'} "
                           f"head={head if head is not None else '--'} "
                           f"{'WRONG-WAY' if wrong_way else ''}"
