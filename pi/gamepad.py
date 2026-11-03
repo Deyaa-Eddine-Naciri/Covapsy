@@ -83,6 +83,10 @@ class Gamepad:
         self.ax_steer = int(p.get("gp_axis_steer", 0))
         self.ax_rt = int(p.get("gp_axis_rt", 4))
         self.ax_lt = int(p.get("gp_axis_lt", 5))
+        self.ax_dpad_x = int(p.get("gp_axis_dpad_x", 6))
+        self.btn_dpad_l = int(p.get("gp_btn_dpad_left", 13))
+        self.btn_dpad_r = int(p.get("gp_btn_dpad_right", 14))
+        self._prev_dpad_x = 0
         self._lock = threading.Lock()
         self._axes = {}
         self._presses = []
@@ -141,6 +145,26 @@ class Gamepad:
         with self._lock:
             out, self._presses = self._presses, []
             return out
+
+    def pop_trim_delta(self) -> int:
+        """Return -1 (trim left), +1 (trim right), or 0 since last call from D-pad."""
+        delta = 0
+        with self._lock:
+            cur_dpad = self._axes.get(self.ax_dpad_x, 0)
+            if cur_dpad > 16000 and self._prev_dpad_x <= 16000:
+                delta += 1   # pressed right
+            elif cur_dpad < -16000 and self._prev_dpad_x >= -16000:
+                delta -= 1   # pressed left
+            self._prev_dpad_x = cur_dpad
+
+            # Also check button-style D-pads
+            if self.btn_dpad_r in self._presses:
+                self._presses.remove(self.btn_dpad_r)
+                delta += 1
+            if self.btn_dpad_l in self._presses:
+                self._presses.remove(self.btn_dpad_l)
+                delta -= 1
+        return delta
 
     # event decoding (separate from I/O so it is unit-testable)
 

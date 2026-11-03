@@ -54,6 +54,7 @@ PARAMS = {
     "loop_hz": 15,                # control loop rate, Hz (inside 250 ms watchdog)
     "max_steer_rate_dps": 180.0,  # steering slew-rate limit, deg/s (prevents instant snap & tire scrub; 150-250 deg/s realistic for RC servo)
     "steer_sign": 1,              # flip to -1 if the car steers the wrong way
+    "steer_trim_deg": 0.0,        # steering trim offset (+left, -right) applied to all modes
     "lidar_front_offset_deg": 0,  # raw-lidar-angle to car-front calibration
     "rear_unknown_blocks": True,  # if rear sensor data missing, assume blocked
     "rear_sector_deg": 35,        # sim: +/- this around 180 deg == behind the car
@@ -86,6 +87,10 @@ PARAMS = {
     "gp_btn_b": 1,                # STOP (neutral)
     "gp_btn_x": 3,                # enter MANUAL
     "gp_btn_rb": 7,               # arm / disarm manual throttle (press to toggle)
+    "gp_axis_dpad_x": 6,          # D-pad left/right axis (-32767 left, +32767 right; Bluetooth or USB)
+    "gp_btn_dpad_left": 13,       # D-pad button fallback (if mapped as buttons on some drivers)
+    "gp_btn_dpad_right": 14,
+    "gp_trim_step_deg": 0.25,     # steering trim step per D-pad press
 }
 
 # Allow overriding any parameter via TUNE_<key> environment variables

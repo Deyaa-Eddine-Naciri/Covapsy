@@ -222,6 +222,8 @@ def main():
     gp = None
     gp_drops = 0
     manual_armed = False
+    steer_trim = float(p.get("steer_trim_deg", 0.0))
+    trim_step = float(p.get("gp_trim_step_deg", 0.25))
     if args.gamepad:
         from gamepad import Gamepad, manual_command
         gp = Gamepad(args.gamepad, p).start()
@@ -255,6 +257,15 @@ def main():
 
                 cmds = ctl.poll()
                 if gp is not None:
+                    # D-pad steering trim: D-pad Left trims left (+deg), D-pad Right trims right (-deg)
+                    trim_dir = gp.pop_trim_delta()
+                    if trim_dir != 0:
+                        # convention: +deg = left, -deg = right
+                        steer_trim += (-trim_dir) * trim_step
+                        steer_trim = max(-5.0, min(5.0, steer_trim))
+                        side = "LEFT " if steer_trim > 0.01 else "RIGHT" if steer_trim < -0.01 else "CENTER"
+                        print(f" >> steer trim: {steer_trim:+5.2f} deg ({side}) [save via steer_trim_deg in config.py]")
+
                     for b in gp.pop_presses():
                         if b == p["gp_btn_b"]:
                             cmds.append("STOP")
@@ -360,11 +371,11 @@ def main():
                     pulse_us = int(round(neutral_rev_us - rev_ratio * (neutral_rev_us - target_rev_us)))
 
                     actual_steer = steer_deg if state == "MANUAL" else -steer_deg
-                    link.set_steering(steer_sign * actual_steer)
+                    link.set_steering(steer_sign * (actual_steer + steer_trim))
                     link.send_raw("P%d" % pulse_us)
                 else:
                     reverse_armed = False
-                    link.set_steering(steer_sign * steer_deg)
+                    link.set_steering(steer_sign * (steer_deg + steer_trim))
                     link.set_speed(max(speed_mps, 0.0))
 
                 # Camera wrong-way: advisory telemetry only, not a control input.

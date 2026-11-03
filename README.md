@@ -177,12 +177,34 @@ covapsy/
    # Optional flags:
    #   --dry-run                   # Steers to LiDAR but forces throttle to 0
    #   --camera                    # Enables RealSense RGB wrong-way monitor
+   #   --gamepad                   # Enables Xbox controller manual teleop
    ```
 4. **Trigger Start/Stop** (from the trackside laptop over Wi-Fi):
    ```bash
    python3 pi/covapsy_ctl.py start --host <pi-ip>
    python3 pi/covapsy_ctl.py stop  --host <pi-ip>
    ```
+
+### 2. Manual Xbox Controller Mode (`--gamepad`)
+
+Connect an Xbox Series X/One controller via Bluetooth or USB-C:
+```bash
+python3 pi/race.py --gamepad --manual-speed-cap 0.8
+```
+
+| Control | Action |
+|:---|:---|
+| **Left Stick X** | Proportional Ackermann steering (±18°) |
+| **Right Trigger (RT)** | Proportional forward throttle (0 to `manual-speed-cap`) |
+| **Left Trigger (LT)** | Proportional reverse throttle |
+| **Bumper RB** | Arm / Disarm motor throttle (toggle safety switch) |
+| **D-Pad Left / Right** | Live **Steering Trim** in ±0.25° increments (compensates mechanical drift) |
+| **Button X** | Switch into `MANUAL` driving mode |
+| **Button A** | Switch into autonomous `RUNNING` mode |
+| **Button B** | Immediate emergency stop (`STOPPED` / neutral) |
+
+> [!TIP]
+> While driving forward down a corridor, if the car drifts slightly left, tap **D-Pad Right** until it tracks dead straight. The console will report the calibrated offset (e.g. `steer trim: -0.75 deg`), which you can save in `common/config.py` under `steer_trim_deg`.
 
 ### 2. Running the Simulation
 
