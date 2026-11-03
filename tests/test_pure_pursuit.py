@@ -7,6 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "common"))
 import pure_pursuit as pp
+import slam as slam_mod
 import trajectory as traj_mod
 from config import PARAMS
 
@@ -94,3 +95,39 @@ def test_trajectory_loading():
         tx, ty, tspd, tyaw, closest_idx = traj.find_lookahead_point(0.0, -2.5, 1.0)
         assert tspd > 0.0
         assert 0 <= closest_idx < traj.num_points
+
+
+def test_prune_reversal_loops():
+    # Path that goes forward along x, reverses into a dead-end loop, and resumes from (1.0, 0.05)
+    pts = [
+        (0.0, 0.0), (0.5, 0.0), (1.0, 0.0),
+        (1.4, 0.2), (1.6, 0.3), (1.3, 0.15), (1.02, 0.04),  # dead-end backup hook
+        (1.5, 0.0), (2.0, 0.0),
+    ]
+    pruned = traj_mod.prune_reversal_loops(pts, max_loop_pts=10, shortcut_dist=0.15)
+    # The dead-end hook points (1.4, 0.2), (1.6, 0.3), (1.3, 0.15), (1.02, 0.04) should be removed
+    assert len(pruned) == 5
+    assert pruned == [(0.0, 0.0), (0.5, 0.0), (1.0, 0.0), (1.5, 0.0), (2.0, 0.0)]
+
+
+def test_occupancy_grid_map_and_edt(tmp_path):
+    gmap = slam_mod.OccupancyGridMap(x_min=-2.0, x_max=2.0, y_min=-2.0, y_max=2.0, resolution=0.05)
+    # Simulate a circular wall at radius 1.5m around origin
+    scan = [1.5] * 360
+    for _ in range(4):
+        gmap.integrate_scan(0.0, 0.0, 0.0, scan)
+    gmap.build_distance_field()
+
+    # At origin (0, 0), distance to circular wall of radius 1.5m should be ~1.5m
+    d_center = gmap.get_wall_distance(0.0, 0.0)
+    assert isclose(d_center, 1.5, abs_tol=0.10)
+
+    # Near the wall at (1.48, 0.0), distance should be ~0.0
+    d_wall = gmap.get_wall_distance(1.48, 0.0)
+    assert d_wall < 0.10
+
+    # Round-trip save and load
+    save_file = tmp_path / "test_map.bin"
+    gmap.save(save_file)
+    loaded = slam_mod.OccupancyGridMap.load(save_file)
+    assert isclose(loaded.get_wall_distance(0.0, 0.0), d_center, abs_tol=1e-5)

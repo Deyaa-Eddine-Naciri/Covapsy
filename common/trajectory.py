@@ -130,6 +130,90 @@ def clean_raw_points(raw_points: List[Tuple[float, float]], min_dist: float = 0.
     return cleaned
 
 
+def prune_reversal_loops(points: List[Tuple[float, float]],
+                         max_loop_pts: int = 40,
+                         shortcut_dist: float = 0.18) -> List[Tuple[float, float]]:
+    """Remove dead-end backup/reversal hooks where the path self-intersects locally."""
+    if len(points) < 5:
+        return list(points)
+    pruned = []
+    i = 0
+    n = len(points)
+    while i < n:
+        pruned.append(points[i])
+        best_j = None
+        for j in range(min(n - 1, i + max_loop_pts), i + 2, -1):
+            if hypot(points[j][0] - points[i][0], points[j][1] - points[i][1]) < shortcut_dist:
+                best_j = j
+                break
+        if best_j is not None:
+            i = best_j + 1
+        else:
+            i += 1
+    return pruned
+
+
+def _dist_and_grad(grid_map, px: float, py: float, eps: float = 0.04) -> Tuple[float, float, float]:
+    """Return (wall_dist_m, unit_grad_x, unit_grad_y) pointing away from the closest wall."""
+    d = grid_map.get_wall_distance(px, py)
+    dx = (grid_map.get_wall_distance(px + eps, py) - grid_map.get_wall_distance(px - eps, py)) / (2.0 * eps)
+    dy = (grid_map.get_wall_distance(px, py + eps) - grid_map.get_wall_distance(px, py - eps)) / (2.0 * eps)
+    norm = hypot(dx, dy)
+    if norm > 1e-4:
+        dx /= norm
+        dy /= norm
+    return d, dx, dy
+
+
+def optimize_map_raceline(
+    x_init: List[float], y_init: List[float], grid_map,
+    step_m: float = 0.10,
+    wall_margin_m: float = 0.40,
+    num_iters: int = 120
+) -> Tuple[List[float], List[float], List[float]]:
+    """Compute a minimum-curvature raceline constrained by the 2D OccupancyGridMap distance field.
+
+    Uses normal-projected Laplacian curvature minimization with small bounded steps
+    and an omnidirectional wall distance-field barrier (>= wall_margin_m) so the path
+    smoothly cuts apexes while never crossing or approaching track walls.
+    """
+    s, x, y = resample_equidistant(list(zip(x_init, y_init)), step_m=step_m)
+    n = len(x)
+
+    for it in range(num_iters):
+        yaw, _ = compute_heading_and_curvature(x, y)
+        for i in range(n):
+            prev_i = (i - 1) % n
+            next_i = (i + 1) % n
+            mx = 0.5 * (x[prev_i] + x[next_i])
+            my = 0.5 * (y[prev_i] + y[next_i])
+
+            # Normal projection only (avoids tangential bunching at corners)
+            nx, ny = -sin(yaw[i]), cos(yaw[i])
+            lat_step = (mx - x[i]) * nx + (my - y[i]) * ny
+            step = max(-0.02, min(0.02, 0.45 * lat_step))
+            cand_x = x[i] + step * nx
+            cand_y = y[i] + step * ny
+
+            # Omnidirectional wall clearance barrier via distance field gradient
+            d, gx, gy = _dist_and_grad(grid_map, cand_x, cand_y)
+            if d < wall_margin_m:
+                push = min(0.04, wall_margin_m - d + 0.005)
+                cand_x += push * gx
+                cand_y += push * gy
+            x[i], y[i] = cand_x, cand_y
+
+        if (it + 1) % 30 == 0:
+            s, x, y = resample_equidistant(list(zip(x, y)), step_m=step_m)
+            n = len(x)
+
+    # Final smoothing pass so curvature profile is C2-smooth
+    x, y = smooth_points(x, y, window_size=5)
+    s, x, y = resample_equidistant(list(zip(x, y)), step_m=step_m)
+    x, y = smooth_points(x, y, window_size=5)
+    return s, x, y
+
+
 def resample_equidistant(points: List[Tuple[float, float]], step_m: float = 0.10) -> Tuple[List[float], List[float], List[float]]:
     """Resample closed loop with uniform arc length step_m.
 
@@ -262,20 +346,31 @@ def generate_speed_profile(curvature: List[float], s: List[float],
 
 
 def optimize_raceline(csv_in: Path, csv_out: Path, step_m: float = 0.10,
-                      max_speed_mps: float = 3.20, min_speed_mps: float = 1.00,
-                      max_lat_accel: float = 4.5) -> Trajectory:
-    """Full optimization pipeline: load -> clean -> resample -> smooth -> profile -> save."""
+                      max_speed_mps: float = 3.20, min_speed_mps: float = 1.25,
+                      max_lat_accel: float = 2.28,
+                      grid_map=None) -> Trajectory:
+    """Full optimization pipeline:
+    load -> clean -> prune reversal kinks -> map centerline & min-curvature QP -> speed profile -> save.
+    """
     raw_points = []
     with open(csv_in, "r") as f:
-        header = f.readline()
+        _ = f.readline()
         for line in f:
             parts = line.strip().split(",")
             if len(parts) >= 2:
                 raw_points.append((float(parts[0]), float(parts[1])))
 
     cleaned = clean_raw_points(raw_points, min_dist=0.03)
-    s, x, y = resample_equidistant(cleaned, step_m=step_m)
-    x_smooth, y_smooth = smooth_points(x, y, window_size=5)
+    pruned = prune_reversal_loops(cleaned, max_loop_pts=40, shortcut_dist=0.18)
+    s, x, y = resample_equidistant(pruned, step_m=step_m)
+
+    if grid_map is not None:
+        s, x_smooth, y_smooth = optimize_map_raceline(x, y, grid_map, step_m=step_m)
+    else:
+        x_smooth, y_smooth = smooth_points(x, y, window_size=7)
+        s, x_smooth, y_smooth = resample_equidistant(list(zip(x_smooth, y_smooth)), step_m=step_m)
+        x_smooth, y_smooth = smooth_points(x_smooth, y_smooth, window_size=5)
+
     yaw, curvature = compute_heading_and_curvature(x_smooth, y_smooth)
     speed = generate_speed_profile(curvature, s, max_speed_mps=max_speed_mps,
                                    min_speed_mps=min_speed_mps, max_lat_accel=max_lat_accel)
