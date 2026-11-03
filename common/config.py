@@ -70,6 +70,22 @@ PARAMS = {
     "recovery_secs": 1.5,         # duration of the reverse-out recovery maneuver
     "control_port": 5005,         # TCP port for remote START/STOP
     "control_dir": "/tmp/covapsy",# control-file dir (touch start|stop|quit)
+
+    # --- manual mode (race.py --gamepad): Xbox controller via /dev/input/js* ---
+    "manual_max_speed_mps": 0.8,  # full RT = this speed; override with --manual-speed-cap
+    "manual_reverse_enabled": True,  # LT = reverse (fixed reverse_pwm_us pulse on the real car)
+    "manual_deadzone": 0.08,      # stick / trigger deadzone (fraction of full travel)
+    "manual_trigger_on": 0.30,    # LT press past this fraction == reverse requested
+    # Joystick axis/button numbers. Defaults = Xbox Series X over Bluetooth with
+    # the stock kernel driver (hid-microsoft). Run tests/test_gamepad.py to check.
+    # USB (xpad) / xpadneo layout: lt=2, rt=5, a=0, b=1, x=2, rb=5.
+    "gp_axis_steer": 0,           # left stick X (negative = left)
+    "gp_axis_rt": 4,              # right trigger (throttle)
+    "gp_axis_lt": 5,              # left trigger (reverse)
+    "gp_btn_a": 0,                # START autonomous
+    "gp_btn_b": 1,                # STOP (neutral)
+    "gp_btn_x": 3,                # enter MANUAL
+    "gp_btn_rb": 7,               # arm / disarm manual throttle (press to toggle)
 }
 
 # Allow overriding any parameter via TUNE_<key> environment variables
