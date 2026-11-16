@@ -146,8 +146,6 @@ def parse_args():
                     metavar="DEV", help="enable Xbox controller manual mode (default /dev/input/js0)")
     ap.add_argument("--manual-speed-cap", type=float, default=None,
                     help="manual mode top speed at full RT, m/s (default manual_max_speed_mps)")
-    ap.add_argument("--instant-reverse", action="store_true",
-                    help="bypass the 0.45s brake-neutral tap for instant reverse (requires ESC in F/R crawler mode)")
     return ap.parse_args()
 
 
@@ -362,10 +360,8 @@ def main():
                 # (kinematics mirrored to point nose toward opening). In manual mode,
                 # steering remains direct and intuitive for the human driver.
                 if speed_mps < 0.0 and not rear_blocked:
-                    if not reverse_armed and not args.instant_reverse:
+                    if not reverse_armed:
                         _engage_reverse(link)
-                        reverse_armed = True
-                    elif args.instant_reverse:
                         reverse_armed = True
                     # Scale reverse PWM proportionally between neutral (1440us) and reverse_pwm_us (e.g. 1250us)
                     # based on commanded reverse speed.
